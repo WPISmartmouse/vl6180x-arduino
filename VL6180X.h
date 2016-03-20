@@ -81,11 +81,13 @@ class VL6180X
 
     uint8_t last_status; // status of last I2C transmission
 
-    VL6180X(void);
+    VL6180X(int enablePin, uint8_t new_addr);
 
     void setAddress(uint8_t new_addr);
 
     void init();
+
+    int initMouse();
 
     void configureDefault(void);
 
@@ -112,6 +114,10 @@ class VL6180X
     bool timeoutOccurred(void);
 
   private:
+    long measurement_period;
+    long lastReadTime;
+    uint8_t lastReading;
+    int enable_pin;
     uint8_t address;
     uint16_t io_timeout;
     bool did_timeout;

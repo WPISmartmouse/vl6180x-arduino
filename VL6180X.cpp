@@ -3,18 +3,18 @@
 
 // Defines /////////////////////////////////////////////////////////////////////
 
-// The Arduino two-wire interface uses a 7-bit number for the address,
-// and sets the last bit correctly based on reads and writes
-#define ADDRESS_DEFAULT 0b0101001
 
 // Constructors ////////////////////////////////////////////////////////////////
 
-VL6180X::VL6180X(void)
+VL6180X::VL6180X(int _enablePin, uint8_t new_addr)
 {
-  address = ADDRESS_DEFAULT;
-
+  address = new_addr;
+  enable_pin = _enablePin;
   io_timeout = 0;  // 0 = no timeout
   did_timeout = false;
+  lastReadTime = 0;
+  lastReading = 0;
+  measurement_period = 0;
 }
 
 // Public Methods //////////////////////////////////////////////////////////////
@@ -60,6 +60,79 @@ void VL6180X::init()
   writeReg(0x1A7, 0x1F);
   writeReg(0x030, 0x00);
 }
+
+int VL6180X::initMouse(){
+  digitalWrite(enable_pin, LOW);
+  pinMode(enable_pin, INPUT); // pull up by an ext resistor to 2.8V
+
+  delay(1);
+
+  // Check if the address is already changed
+  Wire.beginTransmission(address); 
+  int e = Wire.endTransmission();
+  
+  if (e != 0) { // No device found on this address
+    int tempAddress = address;    
+    address = 0x29; // temporarily set to default address
+
+    Wire.beginTransmission(address); 
+    int e2 = Wire.endTransmission();
+
+    if (e2 != 0) return -1; // I CANT FIND IT
+
+    setAddress(tempAddress);
+
+    Wire.beginTransmission(address); 
+    int e3 = Wire.endTransmission();
+
+    if (e3 != 0) return -2; // I CANT FIND IT AFTER SETTING THE ADDRESS
+  } 
+
+  init();
+
+  // "Recommended : Public registers"
+
+  // readout__averaging_sample_period = 48
+  writeReg(READOUT__AVERAGING_SAMPLE_PERIOD, 0x30);
+
+  // sysals__analogue_gain_light = 6 (ALS gain = 1 nominal, actually 1.01 according to Table 14 in datasheet)
+  writeReg(SYSALS__ANALOGUE_GAIN, 0x46);
+
+  // sysrange__vhv_repeat_rate = 255 (auto Very High Voltage temperature recalibration after every 255 range measurements)
+  writeReg(SYSRANGE__VHV_REPEAT_RATE, 0xFF);
+
+  // sysals__integration_period = 99 (100 ms)
+  // AN4545 incorrectly recommends writing to register 0x040; 0x63 should go in the lower byte, which is register 0x041.
+  writeReg16Bit(SYSALS__INTEGRATION_PERIOD, 0x0063);
+
+  // sysrange__vhv_recalibrate = 1 (manually trigger a VHV recalibration)
+  writeReg(SYSRANGE__VHV_RECALIBRATE, 0x01);
+
+
+  // "Optional: Public registers"
+
+  // sysrange__intermeasurement_period = 9 (100 ms)
+  writeReg(SYSRANGE__INTERMEASUREMENT_PERIOD, 0x05);
+
+  // sysals__intermeasurement_period = 49 (500 ms)
+  writeReg(SYSALS__INTERMEASUREMENT_PERIOD, 0x31);
+
+  // als_int_mode = 4 (ALS new sample ready interrupt); range_int_mode = 4 (range new sample ready interrupt)
+  writeReg(SYSTEM__INTERRUPT_CONFIG_GPIO, 0x24);
+
+
+  // Reset other settings to power-on defaults
+
+  // sysrange__max_convergence_time = 49 (49 ms)
+  writeReg(VL6180X::SYSRANGE__MAX_CONVERGENCE_TIME, 15);
+
+  // disable interleaved mode
+  writeReg(INTERLEAVED_MODE__ENABLE, 0);
+
+  return 0;
+
+}
+
 
 // Configure some settings for the sensor's default behavior from AN4545 -
 // "Recommended : Public registers" and "Optional: Public registers"
@@ -220,11 +293,17 @@ uint16_t VL6180X::readAmbientSingle()
 // for details.
 void VL6180X::startRangeContinuous(uint16_t period)
 {
+
+  writeReg(SYSRANGE__START, 0x01);
+  delay(50);
+
   int16_t period_reg = (int16_t)(period / 10) - 1;
   period_reg = constrain(period_reg, 0, 254);
 
   writeReg(SYSRANGE__INTERMEASUREMENT_PERIOD, period_reg);
   writeReg(SYSRANGE__START, 0x03);
+
+  measurement_period = (long) period;
 }
 
 // Starts continuous ambient light measurements with the given period in ms
@@ -257,6 +336,8 @@ void VL6180X::startInterleavedContinuous(uint16_t period)
   int16_t period_reg = (int16_t)(period / 10) - 1;
   period_reg = constrain(period_reg, 0, 254);
 
+  measurement_period = (long) period;
+
   writeReg(INTERLEAVED_MODE__ENABLE, 1);
   writeReg(SYSALS__INTERMEASUREMENT_PERIOD, period_reg);
   writeReg(SYSALS__START, 0x03);
@@ -280,6 +361,7 @@ void VL6180X::stopContinuous()
 // range measurement)
 uint8_t VL6180X::readRangeContinuous()
 {
+  /*
   uint16_t millis_start = millis();
   while ((readReg(RESULT__INTERRUPT_STATUS_GPIO) & 0x04) == 0)
   {
@@ -289,11 +371,16 @@ uint8_t VL6180X::readRangeContinuous()
       return 255;
     }
   }
+  */
+  long now = millis();
+  if (now - lastReadTime > measurement_period){
+    lastReadTime = now;
+    lastReading = readReg(RESULT__RANGE_VAL);
+  }
 
-  uint8_t range = readReg(RESULT__RANGE_VAL);
-  writeReg(SYSTEM__INTERRUPT_CLEAR, 0x01);
+  //writeReg(SYSTEM__INTERRUPT_CLEAR, 0x01);
 
-  return range;
+  return lastReading;
 }
 
 // Returns an ambient light reading when continuous mode is activated
